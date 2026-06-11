@@ -1,5 +1,5 @@
 import 'package:flutter/material.dart';
-import 'models.dart';
+import '../models/models.dart';
 
 int compareActivities(ActivityEntry left, ActivityEntry right) {
   final dateCompare = right.date.compareTo(left.date);

@@ -1,0 +1,4 @@
+- Immutable data models using `@immutable` annotation and `copyWith` methods for state updates.
+- Service classes (e.g., `StorageService`, `GamificationService`) are implemented as static utility collections or singletons without external dependency injection.
+- UI components in `lib/widgets/` are stateless widgets accepting all configuration via constructor parameters.
+- Date and time formatting logic is centralized in `lib/helpers/helpers.dart` with support for both 24-hour and 12-hour formats.

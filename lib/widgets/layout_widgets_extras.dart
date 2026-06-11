@@ -1,7 +1,7 @@
 import 'package:flutter/material.dart';
 
-import 'helpers.dart';
-import 'layout_widgets.dart';
+import '../helpers/helpers.dart';
+import '../widgets/layout_widgets.dart';
 
 class InfoRow extends StatelessWidget {
   const InfoRow({
@@ -193,3 +193,4 @@ class SheetContainer extends StatelessWidget {
     );
   }
 }
+

@@ -1,0 +1,5 @@
+- **Framework**: Flutter (Dart SDK ^3.10.4).
+- **Local Storage**: File-based JSON storage using `path_provider` and `dart:io`.
+- **Export/Import**: CSV generation via `csv` package; ZIP backup/restore via `archive` package; PDF generation via `pdf` and `printing` packages.
+- **Notifications**: Local reminders using `flutter_local_notifications`.
+- **Media**: Image picking via `image_picker` and file access via `file_picker`.

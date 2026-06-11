@@ -4,18 +4,27 @@ import 'dart:typed_data';
 import 'package:flutter/foundation.dart';
 
 import 'package:flutter/material.dart';
+import 'package:file_picker/file_picker.dart';
 import 'package:share_plus/share_plus.dart';
 
-import 'animations.dart';
-import 'editor_sheet.dart';
-import 'entry_widgets.dart';
-import 'helpers.dart';
-import 'layout_widgets.dart';
-import 'layout_widgets_extras.dart';
-import 'models.dart';
-import 'profile_sheet.dart';
-import 'settings_page.dart';
-import 'storage_service.dart';
+import '../helpers/animations.dart';
+import '../widgets/editor_sheet.dart';
+import '../pages/analytics_page.dart';
+import '../pages/calendar_page.dart';
+import '../pages/reflection_sheet.dart';
+
+import '../widgets/entry_widgets.dart';
+import '../helpers/helpers.dart';
+import '../widgets/layout_widgets.dart';
+import '../widgets/layout_widgets_extras.dart';
+import '../models/models.dart';
+import '../pages/profile_sheet.dart';
+import '../pages/settings_page.dart';
+import '../services/storage_service.dart';
+import '../services/pdf_export_service.dart';
+import '../services/template_service.dart';
+import '../services/gamification_service.dart';
+import '../services/notification_service.dart';
 
 class InternshipLogHomePage extends StatefulWidget {
   const InternshipLogHomePage({
@@ -36,17 +45,37 @@ class _InternshipLogHomePageState extends State<InternshipLogHomePage> {
 
   InternshipProfile _profile = const InternshipProfile.empty();
   List<ActivityEntry> _entries = const [];
+  List<DailyReflection> _reflections = const [];
+  List<ActivityTemplate> _templates = const [];
+  List<AppBadge> _badges = const [];
   late AppSettings _settings;
 
   bool _isSaving = false;
   int _selectedIndex = 0;
   String? _lastExportPath;
+  String _searchQuery = '';
+  
+  // Multi-select state
+  bool _isMultiSelecting = false;
+  final Set<String> _selectedIds = {};
+  
+  List<ActivityEntry> get _filteredEntries {
+    if (_searchQuery.trim().isEmpty) return _entries;
+    final query = _searchQuery.trim().toLowerCase();
+    return _entries.where((e) => e.activity.toLowerCase().contains(query)).toList();
+  }
 
   @override
   void initState() {
     super.initState();
     _settings = widget.initialSettings;
     _loadData();
+    // Initialize notifications if enabled
+    if (widget.initialSettings.reminderEnabled) {
+      NotificationService.initialize().then((_) {
+        NotificationService.scheduleDailyReminder();
+      });
+    }
   }
 
   Future<void> _loadData() async {
@@ -58,6 +87,9 @@ class _InternshipLogHomePageState extends State<InternshipLogHomePage> {
       _profile = data.profile;
       _entries = [...data.entries]..sort(compareActivities);
       _settings = data.settings;
+      _reflections = [...data.reflections];
+      _templates = [...data.templates];
+      _badges = [...data.badges];
     });
     // Sync with app-level settings
     widget.onSettingsChanged(_settings);
@@ -66,17 +98,33 @@ class _InternshipLogHomePageState extends State<InternshipLogHomePage> {
   Future<void> _persistData({
     InternshipProfile? profile,
     List<ActivityEntry>? entries,
+    List<DailyReflection>? reflections,
+    List<ActivityTemplate>? templates,
+    List<AppBadge>? badges,
   }) async {
     final nextProfile = profile ?? _profile;
     final nextEntries = [...(entries ?? _entries)]..sort(compareActivities);
+    final nextReflections = reflections ?? _reflections;
+    final nextTemplates = templates ?? _templates;
+    final nextBadges = badges ?? _badges;
 
     setState(() {
       _profile = nextProfile;
       _entries = nextEntries;
+      _reflections = nextReflections;
+      _templates = nextTemplates;
+      _badges = nextBadges;
     });
 
     await _storageService.save(
-      AppData(profile: nextProfile, entries: nextEntries, settings: _settings),
+      AppData(
+        profile: nextProfile,
+        entries: nextEntries,
+        settings: _settings,
+        reflections: nextReflections,
+        templates: nextTemplates,
+        badges: nextBadges,
+      ),
     );
   }
 
@@ -86,7 +134,14 @@ class _InternshipLogHomePageState extends State<InternshipLogHomePage> {
     });
     widget.onSettingsChanged(settings);
     await _storageService.save(
-      AppData(profile: _profile, entries: _entries, settings: settings),
+      AppData(
+        profile: _profile,
+        entries: _entries,
+        settings: settings,
+        reflections: _reflections,
+        templates: _templates,
+        badges: _badges,
+      ),
     );
   }
 
@@ -95,18 +150,180 @@ class _InternshipLogHomePageState extends State<InternshipLogHomePage> {
       context: context,
       isScrollControlled: true,
       backgroundColor: Colors.transparent,
-      builder: (context) => SettingsPage(
+      builder: (sheetContext) => SettingsPage(
         settings: _settings,
         onSettingsChanged: _updateSettings,
         onEditProfile: _openProfileEditor,
+        onBackup: () => _backupData(sheetContext),
+        onRestore: () => _restoreData(sheetContext),
+        onImportCsv: () => _importCsvData(sheetContext),
       ),
     );
+  }
+
+  Future<void> _backupData([BuildContext? sheetContext]) async {
+    if (sheetContext != null) Navigator.of(sheetContext).pop(); // close settings
+
+    String exportDir = '';
+    if (!kIsWeb) {
+      exportDir = await FilePicker.getDirectoryPath(dialogTitle: 'Pilih folder untuk menyimpan backup') ?? '';
+      if (exportDir.isEmpty) return;
+    }
+
+    if (!mounted) return;
+    _showMessage('Sedang mem-backup data...');
+    try {
+      final zipPath = await _storageService.backupData(exportDir);
+      if (!mounted) return;
+      if (zipPath != null) {
+        _showMessage(kIsWeb
+            ? '✅ Backup berhasil diunduh: $zipPath'
+            : '✅ Backup berhasil disimpan di: $zipPath');
+      } else {
+        _showMessage('❌ Gagal melakukan backup.');
+      }
+    } catch (e) {
+      if (mounted) _showMessage('❌ Gagal backup: $e');
+    }
+  }
+
+  Future<void> _restoreData([BuildContext? sheetContext]) async {
+    if (sheetContext != null) Navigator.of(sheetContext).pop(); // close settings
+    try {
+      final result = await FilePicker.pickFiles(
+        dialogTitle: 'Pilih file backup (.zip)',
+        type: FileType.custom,
+        allowedExtensions: ['zip'],
+        withData: true,
+      );
+
+      if (result == null || !mounted) return;
+      final file = result.files.single;
+
+      // On web, need bytes; on mobile, need path
+      if (kIsWeb && file.bytes == null) return;
+      if (!kIsWeb && file.path == null) return;
+
+      if (!mounted) return;
+
+      final confirmed = await showDialog<bool>(
+        context: context,
+        builder: (context) => AlertDialog(
+          title: const Text('Restore Data?'),
+          content: const Text('Data saat ini akan tertimpa dengan data dari backup. Lanjutkan?'),
+          actions: [
+            TextButton(onPressed: () => Navigator.of(context).pop(false), child: const Text('Batal')),
+            FilledButton(onPressed: () => Navigator.of(context).pop(true), child: const Text('Restore')),
+          ],
+        ),
+      );
+
+      if (confirmed != true || !mounted) return;
+
+      _showMessage('Sedang memulihkan data...');
+      final success = kIsWeb
+          ? await _storageService.restoreData('', bytes: Uint8List.fromList(file.bytes!))
+          : await _storageService.restoreData(file.path!);
+      if (!mounted) return;
+      if (success) {
+        await _loadData(); // reload UI
+        _showMessage('✅ Data berhasil dipulihkan!');
+      } else {
+        _showMessage('❌ Gagal memulihkan data.');
+      }
+    } catch (e) {
+      if (mounted) _showMessage('❌ Gagal restore: $e');
+    }
+  }
+
+  Future<void> _importCsvData([BuildContext? sheetContext]) async {
+    if (sheetContext != null) Navigator.of(sheetContext).pop(); // close settings
+    try {
+      final result = await FilePicker.pickFiles(
+        dialogTitle: 'Pilih file CSV',
+        type: FileType.custom,
+        allowedExtensions: ['csv'],
+        withData: true, // Always get data so it works on web too
+      );
+
+      if (result == null || !mounted) return;
+      final file = result.files.single;
+
+      // Read CSV content from bytes or path
+      String? csvContent;
+      try {
+        if (kIsWeb) {
+          if (file.bytes == null) return;
+          csvContent = utf8.decode(file.bytes!);
+        } else {
+          if (file.path == null) return;
+          csvContent = await File(file.path!).readAsString();
+        }
+      } catch (e) {
+        if (mounted) _showMessage('❌ Gagal membaca file: $e');
+        return;
+      }
+
+      if (!mounted || csvContent == null) return;
+
+      final confirmed = await showDialog<bool>(
+        context: context,
+        builder: (context) => AlertDialog(
+          title: const Text('Import CSV?'),
+          content: Text('Catatan dari "${file.name}" akan ditambahkan ke data saat ini. Lanjutkan?'),
+          actions: [
+            TextButton(onPressed: () => Navigator.of(context).pop(false), child: const Text('Batal')),
+            FilledButton(onPressed: () => Navigator.of(context).pop(true), child: const Text('Import')),
+          ],
+        ),
+      );
+
+      if (confirmed != true || !mounted) return;
+
+      _showMessage('Sedang mengimpor data CSV...');
+      final importResult = await _storageService.importCsvFromString(csvContent, _settings.use24HourFormat);
+      final importedEntries = importResult.entries;
+
+      if (!mounted) return;
+
+      if (importedEntries.isNotEmpty) {
+        final newEntries = [..._entries];
+        for (final e in importedEntries) {
+          // avoid exact duplicates (same date, same start, same end, same activity)
+          final isDuplicate = newEntries.any((existing) =>
+              existing.date == e.date &&
+              existing.startMinutes == e.startMinutes &&
+              existing.endMinutes == e.endMinutes &&
+              existing.activity == e.activity);
+          if (!isDuplicate) {
+            newEntries.add(e);
+          }
+        }
+
+        // Apply profile from CSV if found and current profile is empty
+        InternshipProfile? newProfile;
+        if (importResult.profile != null && _profile.isEmpty) {
+          newProfile = importResult.profile;
+        }
+
+        await _persistData(entries: newEntries, profile: newProfile);
+
+        final profileMsg = newProfile != null ? ' (profil juga diimpor)' : '';
+        _showMessage('✅ ${importedEntries.length} data berhasil diimpor!$profileMsg');
+      } else {
+        _showMessage('❌ Tidak ada data yang berhasil diimpor. Pastikan format CSV sesuai (ekspor dari aplikasi ini).');
+      }
+    } catch (e) {
+      if (mounted) _showMessage('❌ Gagal import CSV: $e');
+    }
   }
 
   double get _totalHours =>
       _entries.fold(0.0, (sum, entry) => sum + entry.durationHours);
 
   Widget? get _floatingActionButton {
+    if (_isMultiSelecting) return null;
+
     if (_selectedIndex == 0) {
       return FloatingActionButton.extended(
         onPressed: _openProfileEditor,
@@ -116,10 +333,24 @@ class _InternshipLogHomePageState extends State<InternshipLogHomePage> {
     }
 
     if (_selectedIndex == 1) {
-      return FloatingActionButton.extended(
-        onPressed: _openActivityEditor,
-        icon: const Icon(Icons.add_task_rounded),
-        label: const Text('Tambah aktivitas'),
+      return Column(
+        mainAxisSize: MainAxisSize.min,
+        crossAxisAlignment: CrossAxisAlignment.end,
+        children: [
+          FloatingActionButton.small(
+            heroTag: 'template',
+            onPressed: _showTemplatePicker,
+            tooltip: 'Quick-add dari template',
+            child: const Icon(Icons.flash_on_rounded),
+          ),
+          const SizedBox(height: 12),
+          FloatingActionButton.extended(
+            heroTag: 'add_activity',
+            onPressed: _openActivityEditor,
+            icon: const Icon(Icons.add_task_rounded),
+            label: const Text('Tambah aktivitas'),
+          ),
+        ],
       );
     }
 
@@ -221,7 +452,26 @@ class _InternshipLogHomePageState extends State<InternshipLogHomePage> {
     if (!mounted) {
       return;
     }
-    _showMessage('Aktivitas berhasil dihapus.');
+
+    // Show undo SnackBar
+    ScaffoldMessenger.of(context)
+      ..hideCurrentSnackBar()
+      ..showSnackBar(
+        SnackBar(
+          content: const Text('Aktivitas berhasil dihapus.'),
+          duration: const Duration(seconds: 5),
+          action: SnackBarAction(
+            label: 'Undo',
+            textColor: Theme.of(context).colorScheme.primary,
+            onPressed: () {
+              // Restore the deleted entry
+              final restored = [..._entries, entry];
+              _persistData(entries: restored);
+              _showMessage('Aktivitas dipulihkan.');
+            },
+          ),
+        ),
+      );
   }
 
   Future<String?> _ensureExportFile() async {
@@ -294,6 +544,195 @@ class _InternshipLogHomePageState extends State<InternshipLogHomePage> {
     }
   }
 
+  Future<String?> _exportPdf() async {
+    if (!_profile.canExport) {
+      _showMessage('Lengkapi nama mahasiswa, universitas, dan periode magang terlebih dahulu.');
+      return null;
+    }
+    if (_entries.isEmpty) {
+      _showMessage('Belum ada aktivitas harian yang bisa diekspor.');
+      return null;
+    }
+
+    setState(() => _isSaving = true);
+    try {
+      final path = await PdfExportService.exportToPdf(
+        AppData(profile: _profile, entries: _entries, settings: _settings),
+      );
+      if (mounted) setState(() => _lastExportPath = path);
+      return path;
+    } catch (e) {
+      if (mounted) _showMessage('Gagal ekspor PDF: $e');
+      return null;
+    } finally {
+      if (mounted) setState(() => _isSaving = false);
+    }
+  }
+
+  Future<void> _savePdfOnly() async {
+    final path = await _exportPdf();
+    if (!mounted || path == null) return;
+    _showMessage('✅ PDF disimpan di: $path');
+  }
+
+  Future<void> _sharePdf() async {
+    final path = await _exportPdf();
+    if (!mounted || path == null) return;
+
+    if (!kIsWeb) {
+      await Share.shareXFiles([
+        XFile(path, mimeType: 'application/pdf'),
+      ], text: 'Log kegiatan magang ${_profile.studentName} (PDF)');
+    }
+  }
+
+  // ─── Reflection Methods ────────────────────────────────────────────
+  Future<void> _openReflectionSheet([DailyReflection? existing]) async {
+    final today = dateOnly(DateTime.now());
+    final existingForToday = _reflections.where((r) => isSameDay(r.date, today)).firstOrNull;
+    
+    final reflection = await showModalBottomSheet<DailyReflection>(
+      context: context,
+      isScrollControlled: true,
+      backgroundColor: Colors.transparent,
+      builder: (context) => ReflectionSheet(
+        existingReflection: existing ?? existingForToday,
+      ),
+    );
+
+    if (!mounted || reflection == null) return;
+
+    final nextReflections = [..._reflections];
+    final index = nextReflections.indexWhere((r) => isSameDay(r.date, reflection.date));
+    if (index >= 0) {
+      nextReflections[index] = reflection;
+    } else {
+      nextReflections.add(reflection);
+    }
+    await _persistData(reflections: nextReflections);
+    
+    // Check for new badges
+    _checkBadges();
+    
+    if (mounted) _showMessage('Refleksi berhasil disimpan.');
+  }
+
+  // ─── Template Quick-Add ────────────────────────────────────────────
+  Future<void> _showTemplatePicker() async {
+    final allTemplates = TemplateService.getAllTemplates(_templates);
+    
+    final selected = await showModalBottomSheet<ActivityTemplate>(
+      context: context,
+      isScrollControlled: true,
+      backgroundColor: Colors.transparent,
+      builder: (ctx) => _TemplatePickerSheet(templates: allTemplates),
+    );
+
+    if (!mounted || selected == null) return;
+
+    final entry = TemplateService.createEntryFromTemplate(
+      selected,
+      DateTime.now(),
+      8 * 60, // Default start at 08:00
+    );
+
+    final nextEntries = [..._entries, entry];
+    await _persistData(entries: nextEntries);
+    _checkBadges();
+    
+    if (mounted) _showMessage('Aktivitas dari template berhasil ditambahkan.');
+  }
+
+  // ─── Badge Checking ──────────────────────────────────────────────
+  void _checkBadges() {
+    final newBadges = GamificationService.checkNewBadges(
+      _entries,
+      _reflections,
+      _badges,
+    );
+    if (newBadges.isNotEmpty) {
+      final allBadges = [..._badges, ...newBadges];
+      _persistData(badges: allBadges);
+      
+      // Show badge notification
+      if (mounted) {
+        for (final badge in newBadges) {
+          ScaffoldMessenger.of(context).showSnackBar(
+            SnackBar(
+              content: Text('${badge.icon} Badge baru: ${badge.title}!'),
+              duration: const Duration(seconds: 3),
+            ),
+          );
+        }
+      }
+    }
+  }
+
+  // ─── Multi-Select Methods ──────────────────────────────────────
+  void _toggleMultiSelect() {
+    setState(() {
+      _isMultiSelecting = !_isMultiSelecting;
+      if (!_isMultiSelecting) _selectedIds.clear();
+    });
+  }
+
+  void _toggleSelection(String id) {
+    setState(() {
+      if (_selectedIds.contains(id)) {
+        _selectedIds.remove(id);
+      } else {
+        _selectedIds.add(id);
+      }
+    });
+  }
+
+  Future<void> _bulkDelete() async {
+    if (_selectedIds.isEmpty) return;
+    
+    final confirmed = await showDialog<bool>(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        title: const Text('Hapus terpilih?'),
+        content: Text('${_selectedIds.length} aktivitas akan dihapus.'),
+        actions: [
+          TextButton(onPressed: () => Navigator.of(ctx).pop(false), child: const Text('Batal')),
+          FilledButton(
+            onPressed: () => Navigator.of(ctx).pop(true),
+            style: FilledButton.styleFrom(backgroundColor: const Color(0xFFDC2626)),
+            child: const Text('Hapus'),
+          ),
+        ],
+      ),
+    );
+
+    if (confirmed != true || !mounted) return;
+
+    final nextEntries = _entries.where((e) => !_selectedIds.contains(e.id)).toList();
+    await _persistData(entries: nextEntries);
+    
+    setState(() {
+      _isMultiSelecting = false;
+      _selectedIds.clear();
+    });
+    
+    if (mounted) _showMessage('${_selectedIds.length} aktivitas dihapus.');
+  }
+
+  // ─── Open Calendar (kept for programmatic use) ──────────────────
+  // ignore: unused_element
+  void _openCalendar() {
+    Navigator.of(context).push(
+      MaterialPageRoute(
+        builder: (ctx) => CalendarPage(
+          entries: _entries,
+          settings: _settings,
+          onEdit: _openActivityEditor,
+          onAddActivity: _openActivityEditor,
+        ),
+      ),
+    );
+  }
+
   @override
   Widget build(BuildContext context) {
     final theme = Theme.of(context);
@@ -302,11 +741,15 @@ class _InternshipLogHomePageState extends State<InternshipLogHomePage> {
       extendBodyBehindAppBar: true,
       appBar: AppBar(
         title: Text(
-          switch (_selectedIndex) {
-            0 => 'Dashboard',
-            1 => 'Catatan',
-            _ => 'Ekspor',
-          },
+          _isMultiSelecting
+              ? '${_selectedIds.length} dipilih'
+              : switch (_selectedIndex) {
+                  0 => 'Dashboard',
+                  1 => 'Catatan',
+                  2 => 'Kalender',
+                  3 => 'Laporan',
+                  _ => 'Ekspor',
+                },
           style: theme.textTheme.titleLarge?.copyWith(
             fontWeight: FontWeight.w900,
             fontFamily: 'Serif',
@@ -318,21 +761,36 @@ class _InternshipLogHomePageState extends State<InternshipLogHomePage> {
         backgroundColor: Colors.transparent,
         elevation: 0,
         scrolledUnderElevation: 0,
+        leading: _isMultiSelecting
+            ? IconButton(
+                onPressed: _toggleMultiSelect,
+                icon: const Icon(Icons.close_rounded),
+                tooltip: 'Batal',
+              )
+            : null,
         actions: [
-          Padding(
-            padding: const EdgeInsets.only(right: 8),
-            child: IconButton(
-              onPressed: _openSettings,
-              icon: const Icon(Icons.settings_outlined),
-              style: IconButton.styleFrom(
-                backgroundColor: isDark 
-                    ? Colors.white.withOpacity(0.05) 
-                    : theme.colorScheme.primary.withOpacity(0.05),
-                foregroundColor: theme.colorScheme.onSurface,
+          if (_isMultiSelecting)
+            IconButton(
+              onPressed: _bulkDelete,
+              icon: const Icon(Icons.delete_outline_rounded),
+              tooltip: 'Hapus terpilih',
+              color: const Color(0xFFDC2626),
+            )
+          else
+            Padding(
+              padding: const EdgeInsets.only(right: 8),
+              child: IconButton(
+                onPressed: _openSettings,
+                icon: const Icon(Icons.settings_outlined),
+                style: IconButton.styleFrom(
+                  backgroundColor: isDark 
+                      ? Colors.white.withOpacity(0.05) 
+                      : theme.colorScheme.primary.withOpacity(0.05),
+                  foregroundColor: theme.colorScheme.onSurface,
+                ),
+                tooltip: 'Pengaturan',
               ),
-              tooltip: 'Pengaturan',
             ),
-          ),
         ],
       ),
       body: DecoratedBox(
@@ -368,6 +826,17 @@ class _InternshipLogHomePageState extends State<InternshipLogHomePage> {
               child: switch (_selectedIndex) {
                 0 => _buildProfilePage(context),
                 1 => _buildActivityPage(context),
+                2 => CalendarPage(
+                  entries: _entries,
+                  settings: _settings,
+                  onEdit: _openActivityEditor,
+                  onAddActivity: () => _openActivityEditor(),
+                ),
+                3 => AnalyticsPage(
+                  entries: _entries,
+                  settings: _settings,
+                  profile: _profile,
+                ),
                 _ => _buildExportPage(context),
               },
             ),
@@ -402,6 +871,16 @@ class _InternshipLogHomePageState extends State<InternshipLogHomePage> {
               icon: Icon(Icons.menu_book_outlined),
               selectedIcon: Icon(Icons.menu_book_rounded),
               label: 'Aktivitas',
+            ),
+            NavigationDestination(
+              icon: Icon(Icons.calendar_month_outlined),
+              selectedIcon: Icon(Icons.calendar_month_rounded),
+              label: 'Kalender',
+            ),
+            NavigationDestination(
+              icon: Icon(Icons.analytics_outlined),
+              selectedIcon: Icon(Icons.analytics_rounded),
+              label: 'Laporan',
             ),
             NavigationDestination(
               icon: Icon(Icons.file_download_outlined),
@@ -546,18 +1025,20 @@ class _InternshipLogHomePageState extends State<InternshipLogHomePage> {
                 child: Row(
                   mainAxisAlignment: MainAxisAlignment.spaceAround,
                   children: [
-                    _BannerStat(value: '${_entries.length}', label: 'Log'),
+                    Expanded(child: _BannerStat(value: '${_entries.length}', label: 'Log')),
                     _divider(),
-                    _BannerStat(value: '${_totalHours.toInt()}', label: 'Jam'),
+                    Expanded(child: _BannerStat(value: '${_totalHours.toInt()}', label: 'Jam')),
                     _divider(),
-                    _BannerStat(
-                      value: _entries.isEmpty
-                          ? '-'
-                          : '${_entries.map((e) => e.date).toSet().length}',
-                      label: 'Hari',
+                    Expanded(
+                      child: _BannerStat(
+                        value: _entries.isEmpty
+                            ? '-'
+                            : '${_entries.map((e) => e.date).toSet().length}',
+                        label: 'Hari',
+                      ),
                     ),
                     _divider(),
-                    _BannerStat(value: '$totalPhotos', label: 'Foto'),
+                    Expanded(child: _BannerStat(value: '$totalPhotos', label: 'Foto')),
                   ],
                 ),
               ),
@@ -690,6 +1171,121 @@ class _InternshipLogHomePageState extends State<InternshipLogHomePage> {
               ),
               const SizedBox(height: 16),
 
+              // ─── Streak & Badges Card ──────────────────────────────────────
+              FadeSlideIn(
+                delay: const Duration(milliseconds: 250),
+                child: Container(
+                  padding: const EdgeInsets.all(16),
+                  decoration: BoxDecoration(
+                    color: isDark ? const Color(0xFF422006) : const Color(0xFFFEF3C7),
+                    borderRadius: BorderRadius.circular(20),
+                    border: Border.all(
+                      color: isDark
+                          ? const Color(0xFF92400E).withOpacity(0.5)
+                          : const Color(0xFFF59E0B).withOpacity(0.4),
+                    ),
+                  ),
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      Row(
+                        children: [
+                          Container(
+                            padding: const EdgeInsets.all(8),
+                            decoration: BoxDecoration(
+                              color: const Color(0xFFF59E0B).withOpacity(0.2),
+                              borderRadius: BorderRadius.circular(10),
+                            ),
+                            child: const Icon(Icons.local_fire_department_rounded,
+                                size: 20, color: Color(0xFFF59E0B)),
+                          ),
+                          const SizedBox(width: 10),
+                          Expanded(
+                            child: Column(
+                              crossAxisAlignment: CrossAxisAlignment.start,
+                              children: [
+                                Text(
+                                  'Streak',
+                                  style: theme.textTheme.labelMedium?.copyWith(
+                                    color: const Color(0xFFF59E0B),
+                                    fontWeight: FontWeight.w700,
+                                  ),
+                                ),
+                                Text(
+                                  '${GamificationService.calculateStreak(_entries)} hari berturut-turut',
+                                  style: theme.textTheme.titleMedium?.copyWith(
+                                    fontWeight: FontWeight.w900,
+                                    color: isDark ? Colors.white : const Color(0xFF92400E),
+                                  ),
+                                ),
+                              ],
+                            ),
+                          ),
+                          Text(
+                            '🏅 ${_badges.length}',
+                            style: theme.textTheme.titleMedium?.copyWith(
+                              fontWeight: FontWeight.w800,
+                              color: const Color(0xFFF59E0B),
+                            ),
+                          ),
+                        ],
+                      ),
+                      if (_badges.isNotEmpty) ...[                    
+                        const SizedBox(height: 12),
+                        SizedBox(
+                          height: 44,
+                          child: ListView.separated(
+                            scrollDirection: Axis.horizontal,
+                            itemCount: _badges.length,
+                            separatorBuilder: (_, __) => const SizedBox(width: 6),
+                            itemBuilder: (ctx, i) {
+                              final badge = _badges[i];
+                              return Tooltip(
+                                message: '${badge.title}\n${badge.description}',
+                                child: Container(
+                                  width: 44,
+                                  height: 44,
+                                  decoration: BoxDecoration(
+                                    color: const Color(0xFFF59E0B).withOpacity(0.15),
+                                    borderRadius: BorderRadius.circular(12),
+                                    border: Border.all(
+                                      color: const Color(0xFFF59E0B).withOpacity(0.3),
+                                    ),
+                                  ),
+                                  alignment: Alignment.center,
+                                  child: Text(badge.icon, style: const TextStyle(fontSize: 22)),
+                                ),
+                              );
+                            },
+                          ),
+                        ),
+                      ],
+                    ],
+                  ),
+                ),
+              ),
+              const SizedBox(height: 16),
+
+              // ─── Reflection Button ─────────────────────────────────────
+              FadeSlideIn(
+                delay: const Duration(milliseconds: 280),
+                child: SizedBox(
+                  width: double.infinity,
+                  child: OutlinedButton.icon(
+                    onPressed: () => _openReflectionSheet(),
+                    icon: const Icon(Icons.psychology_outlined),
+                    label: const Text('Isi Refleksi Harian'),
+                    style: OutlinedButton.styleFrom(
+                      padding: const EdgeInsets.symmetric(vertical: 14),
+                      side: BorderSide(
+                        color: theme.colorScheme.primary.withOpacity(0.3),
+                      ),
+                    ),
+                  ),
+                ),
+              ),
+              const SizedBox(height: 16),
+
               // Mini metric row
               FadeSlideIn(
                 delay: const Duration(milliseconds: 300),
@@ -806,6 +1402,44 @@ class _InternshipLogHomePageState extends State<InternshipLogHomePage> {
     return ListView(
       padding: const EdgeInsets.fromLTRB(20, 100, 20, 120),
       children: [
+        // Multi-select toggle button
+        if (!_isMultiSelecting && _entries.isNotEmpty)
+          Padding(
+            padding: const EdgeInsets.only(bottom: 8),
+            child: Align(
+              alignment: Alignment.centerRight,
+              child: TextButton.icon(
+                onPressed: _toggleMultiSelect,
+                icon: const Icon(Icons.checklist_rounded, size: 18),
+                label: const Text('Pilih banyak'),
+              ),
+            ),
+          ),
+        if (_isMultiSelecting && _selectedIds.isNotEmpty)
+          Padding(
+            padding: const EdgeInsets.only(bottom: 8),
+            child: Row(
+              children: [
+                Expanded(
+                  child: Text(
+                    '${_selectedIds.length} dipilih',
+                    style: Theme.of(context).textTheme.labelLarge?.copyWith(
+                      fontWeight: FontWeight.w700,
+                      color: Theme.of(context).colorScheme.primary,
+                    ),
+                  ),
+                ),
+                TextButton(
+                  onPressed: () {
+                    setState(() {
+                      _selectedIds.addAll(_entries.map((e) => e.id));
+                    });
+                  },
+                  child: const Text('Pilih semua'),
+                ),
+              ],
+            ),
+          ),
         HeroHeader(
           eyebrow: 'Log Harian',
           title: 'Aktivitas Magang',
@@ -856,22 +1490,129 @@ class _InternshipLogHomePageState extends State<InternshipLogHomePage> {
             ],
           ),
         ),
+        const SizedBox(height: 16),
+        TextField(
+          decoration: InputDecoration(
+            hintText: 'Cari aktivitas (misal: "rapat" atau "laporan")...',
+            prefixIcon: const Icon(Icons.search_rounded),
+            filled: true,
+            fillColor: Theme.of(context).cardColor,
+            border: OutlineInputBorder(
+              borderRadius: BorderRadius.circular(16),
+              borderSide: BorderSide.none,
+            ),
+          ),
+          onChanged: (val) {
+            setState(() {
+              _searchQuery = val;
+            });
+          },
+        ),
         const SizedBox(height: 20),
-        if (_entries.isEmpty)
+        if (_filteredEntries.isEmpty)
           const EmptyState(
             icon: Icons.event_note_outlined,
-            title: 'Belum ada aktivitas harian',
+            title: 'Tidak ada aktivitas',
             description:
-                'Tekan tombol "Tambah aktivitas" untuk mulai mengisi log kegiatan magang.',
+                'Belum ada aktivitas harian atau pencarian tidak ditemukan.',
           )
         else
           ...buildGroupedEntryWidgets(
             context,
-            _entries,
+            _filteredEntries,
             is24Hour: _settings.use24HourFormat,
-            onEdit: _openActivityEditor,
-            onDelete: _deleteActivity,
+            onEdit: _isMultiSelecting
+                ? (entry) => _toggleSelection(entry.id)
+                : _openActivityEditor,
+            onDelete: _isMultiSelecting
+                ? (entry) => _toggleSelection(entry.id)
+                : _deleteActivity,
+            isMultiSelecting: _isMultiSelecting,
+            selectedIds: _selectedIds,
+            onLongPress: _isMultiSelecting
+                ? null
+                : (entry) {
+                    _toggleMultiSelect();
+                    _toggleSelection(entry.id);
+                  },
+            onTap: _isMultiSelecting
+                ? (entry) => _toggleSelection(entry.id)
+                : null,
           ),
+      ],
+    );
+  }
+
+  // ignore: unused_element
+  Widget _buildReportPage(BuildContext context) {
+    if (_entries.isEmpty) {
+      return ListView(
+        padding: const EdgeInsets.fromLTRB(20, 100, 20, 120),
+        children: const [
+          EmptyState(
+            icon: Icons.analytics_outlined,
+            title: 'Belum ada data',
+            description: 'Isi aktivitas terlebih dahulu untuk melihat laporan.',
+          )
+        ]
+      );
+    }
+    
+    // Simple Weekly calculation
+    int thisWeekCount = 0;
+    double thisWeekHours = 0;
+    final now = DateTime.now();
+    for (final e in _entries) {
+      if (now.difference(e.date).inDays <= 7) {
+        thisWeekCount++;
+        thisWeekHours += e.durationHours;
+      }
+    }
+
+    return ListView(
+      padding: const EdgeInsets.fromLTRB(20, 100, 20, 120),
+      children: [
+        HeroHeader(
+          eyebrow: 'Laporan',
+          title: 'Ringkasan Kinerja',
+          subtitle: 'Pantau produktivitas mingguan dan bulanan Anda di sini.',
+          metadata: const [],
+          trailing: const SizedBox.shrink(),
+        ),
+        const SizedBox(height: 20),
+        SurfaceCard(
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              const SectionHeader(
+                title: 'Minggu Ini (7 Hari Terakhir)',
+                subtitle: 'Ringkasan log kegiatan minggu ini.',
+              ),
+              const SizedBox(height: 16),
+              Row(
+                children: [
+                  Expanded(
+                    child: _MiniMetric(
+                      icon: Icons.edit_note_rounded,
+                      label: 'Kegiatan',
+                      value: '$thisWeekCount',
+                      color: const Color(0xFF4F46E5),
+                    ),
+                  ),
+                  const SizedBox(width: 10),
+                  Expanded(
+                    child: _MiniMetric(
+                      icon: Icons.access_time_rounded,
+                      label: 'Jam',
+                      value: thisWeekHours.toStringAsFixed(1),
+                      color: const Color(0xFF16A34A),
+                    ),
+                  ),
+                ],
+              ),
+            ],
+          ),
+        ),
       ],
     );
   }
@@ -881,10 +1622,10 @@ class _InternshipLogHomePageState extends State<InternshipLogHomePage> {
       padding: const EdgeInsets.fromLTRB(20, 100, 20, 120),
       children: [
         HeroHeader(
-          eyebrow: 'Ekspor CSV',
+          eyebrow: 'Ekspor & Import',
           title: 'Offline dulu, bagikan saat perlu',
           subtitle:
-              'Data tetap bisa dipakai sepenuhnya tanpa internet. Saat butuh kirim ke dosen, mentor, atau admin, simpan atau bagikan file CSV yang bisa dibuka di Excel.',
+              'Ekspor laporan PDF/CSV, impor data dari CSV, atau backup dan restore semua data aplikasi.',
           metadata: [
             'Mode offline lokal',
             '${_entries.length} baris aktivitas',
@@ -938,24 +1679,74 @@ class _InternshipLogHomePageState extends State<InternshipLogHomePage> {
         ResponsiveWrap(
           children: [
             QuickActionCard(
-              icon: _isSaving
-                  ? Icons.hourglass_top_rounded
-                  : Icons.save_alt_rounded,
+              icon: _isSaving ? Icons.hourglass_top_rounded : Icons.picture_as_pdf_rounded,
+              tone: const Color(0xFFDC2626),
+              title: 'Simpan PDF',
+              description: 'Laporan resmi format PDF, rapi untuk dosen/pembimbing.',
+              onTap: _isSaving ? () {} : _savePdfOnly,
+            ),
+            QuickActionCard(
+              icon: Icons.share_rounded,
+              tone: const Color(0xFFDC2626),
+              title: 'Bagikan PDF',
+              description: 'Kirim file PDF ke dosen via WhatsApp/Email.',
+              onTap: _isSaving ? () {} : _sharePdf,
+            ),
+            QuickActionCard(
+              icon: _isSaving ? Icons.hourglass_top_rounded : Icons.save_alt_rounded,
               tone: const Color(0xFF0F766E),
               title: 'Simpan CSV',
-              description:
-                  'Membuat file CSV di perangkat, bisa dibuka dengan Excel.',
+              description: 'Data mentah CSV untuk diolah lebih lanjut di Excel.',
               onTap: _isSaving ? () {} : _saveCsvOnly,
             ),
             QuickActionCard(
               icon: Icons.share_rounded,
               tone: const Color(0xFF1D4ED8),
               title: 'Bagikan CSV',
-              description:
-                  'Kirim file CSV lewat WhatsApp, email, atau aplikasi lain.',
+              description: 'Kirim CSV ke dosen atau admin.',
               onTap: _isSaving ? () {} : _shareCsv,
             ),
           ],
+        ),
+        const SizedBox(height: 20),
+        // Import & Backup Section
+        SurfaceCard(
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              const SectionHeader(
+                title: 'Import & Backup',
+                subtitle:
+                    'Impor data dari CSV, backup semua data ke ZIP, atau pulihkan dari backup sebelumnya.',
+              ),
+              const SizedBox(height: 12),
+              ResponsiveWrap(
+                children: [
+                  QuickActionCard(
+                    icon: Icons.upload_file_rounded,
+                    tone: const Color(0xFF7C3AED),
+                    title: 'Import CSV',
+                    description: 'Masukkan data aktivitas dari file CSV ke aplikasi.',
+                    onTap: _importCsvData,
+                  ),
+                  QuickActionCard(
+                    icon: Icons.backup_rounded,
+                    tone: const Color(0xFF0369A1),
+                    title: 'Backup Data',
+                    description: 'Simpan semua data (aktivitas & profil) ke file ZIP.',
+                    onTap: _backupData,
+                  ),
+                  QuickActionCard(
+                    icon: Icons.restore_rounded,
+                    tone: const Color(0xFFB45309),
+                    title: 'Restore Data',
+                    description: 'Pulihkan data dari file ZIP backup sebelumnya.',
+                    onTap: _restoreData,
+                  ),
+                ],
+              ),
+            ],
+          ),
         ),
         const SizedBox(height: 20),
         SurfaceCard(
@@ -1066,6 +1857,89 @@ class _MiniMetric extends StatelessWidget {
   }
 }
 
+// ─── Template Picker Sheet ───────────────────────────────────────────────
+
+class _TemplatePickerSheet extends StatelessWidget {
+  const _TemplatePickerSheet({required this.templates});
+  final List<ActivityTemplate> templates;
+
+  @override
+  Widget build(BuildContext context) {
+    final theme = Theme.of(context);
+    return Container(
+      constraints: BoxConstraints(
+        maxHeight: MediaQuery.of(context).size.height * 0.6,
+      ),
+      decoration: BoxDecoration(
+        color: theme.colorScheme.surface,
+        borderRadius: const BorderRadius.vertical(top: Radius.circular(24)),
+      ),
+      padding: const EdgeInsets.fromLTRB(20, 16, 20, 24),
+      child: Column(
+        mainAxisSize: MainAxisSize.min,
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Center(
+            child: Container(
+              width: 40,
+              height: 4,
+              decoration: BoxDecoration(
+                color: theme.colorScheme.onSurface.withOpacity(0.2),
+                borderRadius: BorderRadius.circular(2),
+              ),
+            ),
+          ),
+          const SizedBox(height: 16),
+          Text(
+            'Quick-Add Template',
+            style: theme.textTheme.titleLarge?.copyWith(
+              fontWeight: FontWeight.w800,
+            ),
+          ),
+          const SizedBox(height: 4),
+          Text(
+            'Pilih template untuk menambah aktivitas dengan cepat.',
+            style: theme.textTheme.bodyMedium?.copyWith(
+              color: theme.colorScheme.onSurface.withOpacity(0.6),
+            ),
+          ),
+          const SizedBox(height: 16),
+          Flexible(
+            child: ListView.separated(
+              shrinkWrap: true,
+              itemCount: templates.length,
+              separatorBuilder: (_, __) => const SizedBox(height: 8),
+              itemBuilder: (ctx, idx) {
+                final tpl = templates[idx];
+                return ListTile(
+                  leading: Container(
+                    padding: const EdgeInsets.all(8),
+                    decoration: BoxDecoration(
+                      color: tpl.category.color.withOpacity(0.12),
+                      borderRadius: BorderRadius.circular(10),
+                    ),
+                    child: Icon(tpl.category.icon, color: tpl.category.color, size: 20),
+                  ),
+                  title: Text(tpl.name, style: const TextStyle(fontWeight: FontWeight.w700)),
+                  subtitle: Text('${tpl.category.label} · ${tpl.defaultDurationMinutes} min'),
+                  trailing: const Icon(Icons.add_circle_outline_rounded),
+                  shape: RoundedRectangleBorder(
+                    borderRadius: BorderRadius.circular(14),
+                    side: BorderSide(
+                      color: theme.colorScheme.outline.withOpacity(0.15),
+                    ),
+                  ),
+                  onTap: () => Navigator.of(context).pop(tpl),
+                );
+              },
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+}
+
 class _RecentActivityTile extends StatelessWidget {
   const _RecentActivityTile({
     required this.entry,
@@ -1159,3 +2033,4 @@ class _RecentActivityTile extends StatelessWidget {
     );
   }
 }
+

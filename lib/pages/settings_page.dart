@@ -1,6 +1,8 @@
 import 'package:flutter/material.dart';
-import 'models.dart';
-import 'layout_widgets_extras.dart';
+import '../models/models.dart';
+import '../widgets/layout_widgets_extras.dart';
+import '../services/notification_service.dart';
+import '../services/auth_service.dart';
 
 class SettingsPage extends StatelessWidget {
   const SettingsPage({
@@ -8,18 +10,23 @@ class SettingsPage extends StatelessWidget {
     required this.settings,
     required this.onSettingsChanged,
     required this.onEditProfile,
+    required this.onBackup,
+    required this.onRestore,
+    required this.onImportCsv,
   });
 
   final AppSettings settings;
   final ValueChanged<AppSettings> onSettingsChanged;
   final VoidCallback onEditProfile;
+  final VoidCallback onBackup;
+  final VoidCallback onRestore;
+  final VoidCallback onImportCsv;
 
   @override
   Widget build(BuildContext context) {
     return SheetContainer(
-      child: Column(
-        crossAxisAlignment: CrossAxisAlignment.start,
-        mainAxisSize: MainAxisSize.min,
+      child: ListView(
+        shrinkWrap: true,
         children: [
           Text(
             'Pengaturan',
@@ -69,12 +76,83 @@ class SettingsPage extends StatelessWidget {
             },
             contentPadding: EdgeInsets.zero,
           ),
+          const Divider(height: 32),
+          _buildSectionTitle(context, 'Notifikasi'),
+          SwitchListTile(
+            secondary: const Icon(Icons.notifications_active_rounded),
+            title: const Text('Reminder Harian'),
+            subtitle: Text(
+              settings.reminderEnabled
+                  ? 'Notifikasi harian aktif'
+                  : 'Ingatkan saya untuk mengisi log',
+            ),
+            value: settings.reminderEnabled,
+            onChanged: (value) async {
+              onSettingsChanged(settings.copyWith(reminderEnabled: value));
+              if (value) {
+                await NotificationService.scheduleDailyReminder();
+              }
+            },
+            contentPadding: EdgeInsets.zero,
+          ),
+          const Divider(height: 32),
+          _buildSectionTitle(context, 'Keamanan'),
+          SwitchListTile(
+            secondary: const Icon(Icons.lock_rounded),
+            title: const Text('Kunci PIN'),
+            subtitle: Text(
+              settings.pinEnabled
+                  ? 'Aplikasi dilindungi PIN'
+                  : 'Aktifkan PIN untuk keamanan',
+            ),
+            value: settings.pinEnabled,
+            onChanged: (value) async {
+              if (value) {
+                // Show create PIN dialog
+                // Get context from the nearest navigator
+                final ctx = Navigator.of(context).context;
+                final pin = await AuthService.showCreatePinDialog(ctx);
+                if (pin != null) {
+                  onSettingsChanged(settings.copyWith(
+                    pinEnabled: true,
+                    pinCode: pin,
+                  ));
+                }
+              } else {
+                onSettingsChanged(settings.copyWith(pinEnabled: false));
+              }
+            },
+            contentPadding: EdgeInsets.zero,
+          ),
+          const Divider(height: 32),
+          _buildSectionTitle(context, 'Penyimpanan Data'),
+          _buildSettingTile(
+            context,
+            icon: Icons.backup_rounded,
+            title: 'Backup Data',
+            subtitle: 'Simpan data log dan gambar ke file .zip',
+            onTap: onBackup,
+          ),
+          _buildSettingTile(
+            context,
+            icon: Icons.restore_rounded,
+            title: 'Restore Data',
+            subtitle: 'Pulihkan data dari file .zip backup',
+            onTap: onRestore,
+          ),
+          _buildSettingTile(
+            context,
+            icon: Icons.upload_file_rounded,
+            title: 'Import CSV',
+            subtitle: 'Masukkan data dari file .csv',
+            onTap: onImportCsv,
+          ),
           const SizedBox(height: 24),
           _buildSectionTitle(context, 'Tentang'),
           ListTile(
             leading: const Icon(Icons.info_outline_rounded),
             title: const Text('Log Magang Academic'),
-            subtitle: const Text('Versi 1.1.0 - Scholarly Edition'),
+            subtitle: const Text('Versi 2.0.0 - Scholarly Edition'),
             contentPadding: EdgeInsets.zero,
           ),
           const SizedBox(height: 16),
@@ -171,3 +249,4 @@ class SettingsPage extends StatelessWidget {
     );
   }
 }
+

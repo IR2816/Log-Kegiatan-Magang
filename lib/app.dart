@@ -1,7 +1,8 @@
 import 'package:flutter/material.dart';
-import 'helpers.dart';
-import 'home_page.dart';
-import 'models.dart';
+import 'pages/home_page.dart';
+import 'pages/lock_screen.dart';
+import 'models/models.dart';
+import 'services/storage_service.dart';
 
 class InternshipLogApp extends StatefulWidget {
   const InternshipLogApp({super.key});
@@ -27,8 +28,43 @@ class _InternshipLogAppContent extends StatefulWidget {
       _InternshipLogAppContentState();
 }
 
-class _InternshipLogAppContentState extends State<_InternshipLogAppContent> {
+class _InternshipLogAppContentState extends State<_InternshipLogAppContent> with WidgetsBindingObserver {
   AppSettings _settings = const AppSettings();
+  bool _isLocked = false;
+  bool _needsLockCheck = false;
+
+  @override
+  void initState() {
+    super.initState();
+    WidgetsBinding.instance.addObserver(this);
+    _checkPinOnStart();
+  }
+
+  @override
+  void dispose() {
+    WidgetsBinding.instance.removeObserver(this);
+    super.dispose();
+  }
+
+  @override
+  void didChangeAppLifecycleState(AppLifecycleState state) {
+    if (state == AppLifecycleState.paused || state == AppLifecycleState.inactive) {
+      _needsLockCheck = true;
+    } else if (state == AppLifecycleState.resumed && _needsLockCheck) {
+      _needsLockCheck = false;
+      if (_settings.pinEnabled && _settings.pinCode.isNotEmpty) {
+        setState(() => _isLocked = true);
+      }
+    }
+  }
+
+  Future<void> _checkPinOnStart() async {
+    final storage = LocalStorageService();
+    final data = await storage.load();
+    if (data.settings.pinEnabled && data.settings.pinCode.isNotEmpty) {
+      if (mounted) setState(() => _isLocked = true);
+    }
+  }
 
   void _updateSettings(AppSettings settings) {
     setState(() {
@@ -48,10 +84,15 @@ class _InternshipLogAppContentState extends State<_InternshipLogAppContent> {
       },
       theme: _buildTheme(Brightness.light),
       darkTheme: _buildTheme(Brightness.dark),
-      home: InternshipLogHomePage(
-        onSettingsChanged: _updateSettings,
-        initialSettings: _settings,
-      ),
+      home: _isLocked
+          ? LockScreen(
+              pinCode: _settings.pinCode,
+              onUnlocked: () => setState(() => _isLocked = false),
+            )
+          : InternshipLogHomePage(
+              onSettingsChanged: _updateSettings,
+              initialSettings: _settings,
+            ),
     );
   }
 
@@ -95,8 +136,8 @@ class _InternshipLogAppContentState extends State<_InternshipLogAppContent> {
         labelBehavior: NavigationDestinationLabelBehavior.alwaysShow,
         height: 64,
         elevation: 0,
-        labelTextStyle: MaterialStateProperty.resolveWith((states) {
-          final isSelected = states.contains(MaterialState.selected);
+        labelTextStyle: WidgetStateProperty.resolveWith((states) {
+          final isSelected = states.contains(WidgetState.selected);
           return TextStyle(
             fontSize: 12,
             fontWeight: isSelected ? FontWeight.w700 : FontWeight.w500,

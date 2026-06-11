@@ -1,0 +1,1 @@
+A cross-platform Flutter application for tracking, managing, and exporting daily internship activities with gamification and reflection features.

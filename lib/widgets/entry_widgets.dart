@@ -3,10 +3,9 @@ import 'dart:io';
 import 'package:flutter/foundation.dart' show kIsWeb;
 import 'package:flutter/material.dart';
 
-import 'animations.dart';
-import 'helpers.dart';
-import 'layout_widgets.dart';
-import 'models.dart';
+import '../helpers/animations.dart';
+import '../helpers/helpers.dart';
+import '../models/models.dart';
 
 enum EntryAction { edit, delete }
 
@@ -17,29 +16,44 @@ class ActivityEntryCard extends StatelessWidget {
     required this.onEdit,
     required this.onDelete,
     this.is24Hour = true,
+    this.isMultiSelecting = false,
+    this.isSelected = false,
+    this.onLongPress,
+    this.onTap,
   });
 
   final ActivityEntry entry;
   final VoidCallback onEdit;
   final VoidCallback onDelete;
   final bool is24Hour;
+  final bool isMultiSelecting;
+  final bool isSelected;
+  final VoidCallback? onLongPress;
+  final VoidCallback? onTap;
 
   @override
   Widget build(BuildContext context) {
     final theme = Theme.of(context);
     final isDark = theme.brightness == Brightness.dark;
 
-    return PressableCard(
-      onTap: onEdit,
+    return GestureDetector(
+      onLongPress: onLongPress,
+      onTap: onTap,
+      child: PressableCard(
+      onTap: onTap != null ? null : onEdit,
       borderRadius: 20,
       child: Container(
         margin: const EdgeInsets.only(bottom: 4),
       decoration: BoxDecoration(
-        color: theme.cardTheme.color,
+        color: isSelected
+            ? theme.colorScheme.primary.withOpacity(isDark ? 0.15 : 0.08)
+            : theme.cardTheme.color,
         borderRadius: BorderRadius.circular(20),
-        border: theme.cardTheme.shape is RoundedRectangleBorder
-            ? Border.fromBorderSide((theme.cardTheme.shape as RoundedRectangleBorder).side)
-            : null,
+        border: isSelected
+            ? Border.all(color: theme.colorScheme.primary, width: 2)
+            : (theme.cardTheme.shape is RoundedRectangleBorder
+                ? Border.fromBorderSide((theme.cardTheme.shape as RoundedRectangleBorder).side)
+                : null),
           boxShadow: [
             BoxShadow(
               color: Colors.black.withOpacity(isDark ? 0.2 : 0.04),
@@ -58,10 +72,48 @@ class ActivityEntryCard extends StatelessWidget {
                 Row(
                   crossAxisAlignment: CrossAxisAlignment.start,
                   children: [
+                    if (isMultiSelecting) ...[                    
+                      Container(
+                        width: 24,
+                        height: 24,
+                        margin: const EdgeInsets.only(right: 10, top: 2),
+                        decoration: BoxDecoration(
+                          shape: BoxShape.circle,
+                          color: isSelected
+                              ? theme.colorScheme.primary
+                              : Colors.transparent,
+                          border: Border.all(
+                            color: isSelected
+                                ? theme.colorScheme.primary
+                                : theme.colorScheme.onSurface.withOpacity(0.3),
+                            width: 2,
+                          ),
+                        ),
+                        child: isSelected
+                            ? const Icon(Icons.check_rounded, size: 16, color: Colors.white)
+                            : null,
+                      ),
+                    ],
                     Expanded(
                       child: Column(
                         crossAxisAlignment: CrossAxisAlignment.start,
                         children: [
+                          Row(
+                            children: [
+                              Icon(entry.category.icon, size: 16, color: entry.category.color),
+                              const SizedBox(width: 6),
+                              Chip(
+                                label: Text(entry.category.label),
+                                backgroundColor: entry.category.color.withOpacity(0.2),
+                                labelStyle: TextStyle(
+                                  color: entry.category.color,
+                                  fontSize: 11,
+                                ),
+                                padding: const EdgeInsets.symmetric(horizontal: 6),
+                              ),
+                            ],
+                          ),
+                          const SizedBox(height: 8),
                           Row(
                             children: [
                               _Badge(
@@ -86,6 +138,21 @@ class ActivityEntryCard extends StatelessWidget {
                               height: 1.4,
                             ),
                           ),
+                          // Tags
+                          if (entry.tags.isNotEmpty) ...[
+                            const SizedBox(height: 8),
+                            Wrap(
+                              spacing: 4,
+                              children: [
+                                for (final tag in entry.tags)
+                                  Chip(
+                                    label: Text(tag),
+                                    padding: const EdgeInsets.symmetric(horizontal: 6),
+                                    labelStyle: const TextStyle(fontSize: 10),
+                                  ),
+                              ],
+                            ),
+                          ],
                         ],
                       ),
                     ),
@@ -149,6 +216,7 @@ class ActivityEntryCard extends StatelessWidget {
           ),
         ),
       ),
+      ),
     );
   }
 }
@@ -194,6 +262,10 @@ List<Widget> buildGroupedEntryWidgets(
   required ValueChanged<ActivityEntry> onEdit,
   required ValueChanged<ActivityEntry> onDelete,
   bool is24Hour = true,
+  bool isMultiSelecting = false,
+  Set<String> selectedIds = const {},
+  ValueChanged<ActivityEntry>? onLongPress,
+  ValueChanged<ActivityEntry>? onTap,
 }) {
   final widgets = <Widget>[];
   DateTime? currentDate;
@@ -248,6 +320,10 @@ List<Widget> buildGroupedEntryWidgets(
           child: ActivityEntryCard(
             entry: entry,
             is24Hour: is24Hour,
+            isMultiSelecting: isMultiSelecting,
+            isSelected: selectedIds.contains(entry.id),
+            onLongPress: onLongPress != null ? () => onLongPress(entry) : null,
+            onTap: onTap != null ? () => onTap(entry) : null,
             onEdit: () => onEdit(entry),
             onDelete: () => onDelete(entry),
           ),
@@ -258,3 +334,4 @@ List<Widget> buildGroupedEntryWidgets(
 
   return widgets;
 }
+

@@ -3,9 +3,10 @@ import 'package:flutter/foundation.dart' show kIsWeb;
 import 'package:flutter/material.dart';
 import 'package:image_picker/image_picker.dart';
 
-import 'helpers.dart';
-import 'layout_widgets_extras.dart';
-import 'models.dart';
+import '../helpers/helpers.dart';
+import '../widgets/layout_widgets_extras.dart';
+import '../models/models.dart';
+import '../services/storage_service.dart';
 
 class ProfileEditorSheet extends StatefulWidget {
   const ProfileEditorSheet({super.key, required this.initialProfile});
@@ -99,7 +100,7 @@ class _ProfileEditorSheetState extends State<ProfileEditorSheet> {
     });
   }
 
-  void _submit() {
+  Future<void> _submit() async {
     final isValid = _formKey.currentState?.validate() ?? false;
     if (!isValid) {
       return;
@@ -123,6 +124,22 @@ class _ProfileEditorSheetState extends State<ProfileEditorSheet> {
       return;
     }
 
+    // Save images to app directory for persistence
+    final storage = LocalStorageService();
+    String? savedLogoPath = _logoPath;
+    String? savedProfilePicPath = _profilePicPath;
+
+    if (_logoPath != null &&
+        !_logoPath!.contains('images/') &&
+        !_logoPath!.contains('images\\')) {
+      savedLogoPath = await storage.saveImageInApp(_logoPath!);
+    }
+    if (_profilePicPath != null &&
+        !_profilePicPath!.contains('images/') &&
+        !_profilePicPath!.contains('images\\')) {
+      savedProfilePicPath = await storage.saveImageInApp(_profilePicPath!);
+    }
+
     final profile = InternshipProfile(
       studentName: _nameController.text.trim(),
       studentId: _studentIdController.text.trim(),
@@ -130,11 +147,13 @@ class _ProfileEditorSheetState extends State<ProfileEditorSheet> {
       internshipPlace: _internshipPlaceController.text.trim(),
       startDate: _startDate,
       endDate: _endDate,
-      universityLogoPath: _logoPath,
-      profilePicturePath: _profilePicPath,
+      universityLogoPath: savedLogoPath,
+      profilePicturePath: savedProfilePicPath,
     );
 
-    Navigator.of(context).pop(profile);
+    if (mounted) {
+      Navigator.of(context).pop(profile);
+    }
   }
 
   @override
@@ -179,7 +198,7 @@ class _ProfileEditorSheetState extends State<ProfileEditorSheet> {
                                 width: 90,
                                 height: 90,
                                 decoration: BoxDecoration(
-                                  color: theme.colorScheme.surfaceVariant.withOpacity(0.3),
+                                  color: theme.colorScheme.surfaceContainerHighest.withOpacity(0.3),
                                   shape: BoxShape.circle,
                                   border: Border.all(
                                     color: theme.colorScheme.primary.withOpacity(0.2),
@@ -228,7 +247,7 @@ class _ProfileEditorSheetState extends State<ProfileEditorSheet> {
                                 width: 90,
                                 height: 90,
                                 decoration: BoxDecoration(
-                                  color: theme.colorScheme.surfaceVariant.withOpacity(0.3),
+                                  color: theme.colorScheme.surfaceContainerHighest.withOpacity(0.3),
                                   borderRadius: BorderRadius.circular(16),
                                   border: Border.all(
                                     color: theme.colorScheme.secondary.withOpacity(0.2),
@@ -356,3 +375,4 @@ class _ProfileEditorSheetState extends State<ProfileEditorSheet> {
     );
   }
 }
+

@@ -1,0 +1,5 @@
+- **Entry Point**: `lib/main.dart` initializes notifications and launches `InternshipLogApp` in `lib/app.dart`.
+- **State Management**: Uses a centralized `AppState` pattern in `lib/pages/home_page.dart` that loads/saves data via `LocalStorageService` and propagates state to sub-pages (Dashboard, Calendar, Analytics).
+- **Data Layer**: `lib/models/models.dart` defines immutable data classes (`ActivityEntry`, `AppData`) with JSON serialization. `lib/services/storage_service.dart` handles local file I/O, CSV/ZIP import/export, and web fallback storage.
+- **UI Structure**: Follows a bottom-navigation layout with dedicated pages for Profile, Activities, Calendar, Analytics, and Export. Reusable UI components are encapsulated in `lib/widgets/` (e.g., `SurfaceCard`, `HeroHeader`).
+- **Security**: Implements a PIN-based lock screen (`lib/pages/lock_screen.dart`) triggered by app lifecycle changes (background/foreground) if enabled in settings.
